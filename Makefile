@@ -1,5 +1,5 @@
 NAME		:= epgsql
-VERSION		:= 1.3
+VERSION		:= $(shell fgrep vsn app.vars | egrep -o '[.0-9]+')
 
 ERL  		:= erl
 ERLC 		:= erlc
