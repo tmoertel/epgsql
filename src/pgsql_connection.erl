@@ -15,6 +15,7 @@
 -export([startup/3, auth/2, initializing/2, ready/2, ready/3]).
 -export([querying/2, parsing/2, binding/2, describing/2]).
 -export([executing/2, closing/2, synchronizing/2, timeout/2]).
+-export([awaiting_sync/2, awaiting_sync/3]).
 
 -include("pgsql.hrl").
 
@@ -289,10 +290,8 @@ ready({close, Type, Name}, From, State) ->
     {next_state, closing, State#state{reply_to = From}, Timeout};
 
 ready(sync, From, State) ->
-    #state{timeout = Timeout} = State,
-    send(State, $S, []),
-    State2 = State#state{reply = ok, reply_to = From},
-    {next_state, synchronizing, State2, Timeout}.
+    synchronize(From, State).
+
 
 %% BindComplete
 querying({$2, <<>>}, State) ->
@@ -469,7 +468,20 @@ executing(timeout, State) ->
 executing({error, E}, State) ->
     #state{timeout = Timeout} = State,
     notify(State, {error, E}),
-    {next_state, executing, State, Timeout}.
+    {next_state, awaiting_sync, State, Timeout}.
+
+
+%% once the server sends an error response during an extended query,
+%% it ignores all requests until it gets a Sync message; this state,
+%% then, acts like "ready" state in which the only thing we will let
+%% a caller do is sync.
+awaiting_sync(sync, From, State) ->
+    synchronize(From, State);
+awaiting_sync(_, _From, #state{timeout = Timeout} = State) ->
+    {reply, {error, awaiting_sync}, awaiting_sync, State, Timeout}.
+
+awaiting_sync(_Msg, State) ->
+    {next_state, awaiting_sync, State}.
 
 %% CloseComplete
 closing({$3, <<>>}, State) ->
@@ -648,3 +660,12 @@ hex(Bin) ->
 
 send(#state{sock = Sock}, Type, Data) ->
     pgsql_sock:send(Sock, Type, Data).
+
+
+%% synchronize with server before releasing caller (w/ ok)
+
+synchronize(From, State) ->
+    #state{timeout = Timeout} = State,
+    send(State, $S, []),
+    State2 = State#state{reply = ok, reply_to = From},
+    {next_state, synchronizing, State2, Timeout}.
