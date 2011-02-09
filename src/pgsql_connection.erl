@@ -15,7 +15,7 @@
 -export([startup/3, auth/2, initializing/2, ready/2, ready/3]).
 -export([querying/2, parsing/2, binding/2, describing/2]).
 -export([executing/2, closing/2, synchronizing/2, timeout/2]).
--export([awaiting_sync/2, awaiting_sync/3]).
+-export([aborted/3]).
 
 -include("pgsql.hrl").
 
@@ -468,20 +468,7 @@ executing(timeout, State) ->
 executing({error, E}, State) ->
     #state{timeout = Timeout} = State,
     notify(State, {error, E}),
-    {next_state, awaiting_sync, State, Timeout}.
-
-
-%% once the server sends an error response during an extended query,
-%% it ignores all requests until it gets a Sync message; this state,
-%% then, acts like "ready" state in which the only thing we will let
-%% a caller do is sync.
-awaiting_sync(sync, From, State) ->
-    synchronize(From, State);
-awaiting_sync(_, _From, #state{timeout = Timeout} = State) ->
-    {reply, {error, awaiting_sync}, awaiting_sync, State, Timeout}.
-
-awaiting_sync(_Msg, State) ->
-    {next_state, awaiting_sync, State}.
+    {next_state, aborted, State, Timeout}.
 
 %% CloseComplete
 closing({$3, <<>>}, State) ->
@@ -526,6 +513,16 @@ timeout(timeout, State) ->
 timeout(_Event, State) ->
     #state{timeout = Timeout} = State,
     {next_state, timeout, State, Timeout}.
+
+aborted(sync, From, State) ->
+    #state{timeout = Timeout} = State,
+    send(State, $S, []),
+    State2 = State#state{reply = ok, reply_to = From},
+    {next_state, synchronizing, State2, Timeout};
+
+aborted(_Msg, _From, State) ->
+    #state{timeout = Timeout} = State,
+    {reply, {error, sync_required}, aborted, State, Timeout}.
 
 %% -- internal functions --
 
